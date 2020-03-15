@@ -1,0 +1,1 @@
+DOMAIN = "power_tariff"
