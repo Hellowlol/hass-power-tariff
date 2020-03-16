@@ -11,9 +11,10 @@ TARIFF_SCHEMA = {
 }
 
 DEVICE_SCHEMA = {
-    vol.Required("entity_id"): cv.string,
+    vol.Required("turn_on"): cv.string,
+    vol.Optional("turn_off"): cv.string,
     vol.Optional("priority", default=10): int,
-    vol.Optional("enabled", default=True): bool,
+    vol.Optional("enabled", default=True): bool, # fixme.
     vol.Optional("power_usage"): cv.string,  # some enit where is this possible to get
     vol.Optional("assumed_usage", default=0.0): float,  # Backup if we dont have way to get the device power usage
 }
