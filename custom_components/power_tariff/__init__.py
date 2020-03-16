@@ -5,6 +5,7 @@ from collections import defaultdict
 from operator import attrgetter, itemgetter
 
 import homeassistant.helpers.config_validation as cv
+import homeassistant.util.dt as dt_util
 import voluptuous as vol
 from homeassistant.const import (ATTR_ENTITY_ID, ATTR_TEMPERATURE,
                                  CONF_PASSWORD, CONF_USERNAME,
@@ -70,11 +71,30 @@ class Tariff:
         self.over_limit_acceptance_seconds = settings.get(
             "over_limit_acceptance_seconds"
         )
+        self.days = settings.get("days")
 
     def valid(self):
         """validate if the tariff is valid (active)"""
-        _LOGGER.info("the tariff is valid")
-        return True
+        now = dt_util.now()
+        _LOGGER.info("%r", self.days)
+        if not len(self.days):
+            _LOGGER.debug("No days are added, as result its always valid..")
+            return True
+
+        else:
+            for day in self.days:
+                if day["weekday"] == now.strftime('%a').lower():
+                    _LOGGER.debug("It's the corrent day")
+                    if day["start"] < now.time() and now.time() < day["end"]:
+                        _LOGGER.debug("now %s between start %s and end %s", now.time(), day["start"], day["end"])
+                        return True
+                    else:
+                        continue
+                else:
+                    _LOGGER.debug("today is not %s %s", day["weekday"], now.strftime('%a'))
+                    continue
+
+        return False
 
 
     @property
@@ -277,3 +297,9 @@ class PowerController:
                 self.pick_minimal_power_reduction()
             else:
                 self.check_if_we_can_turn_on_devices()
+
+
+    #def update(self):
+    #    # self.hass.helpers.entity_registry.async_get_registry()
+    #    for ent in self.hass.states.all():
+    #        pass
