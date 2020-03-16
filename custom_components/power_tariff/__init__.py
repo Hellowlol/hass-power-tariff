@@ -1,8 +1,7 @@
 """Support for power tariff."""
 import logging
 import time
-from collections import defaultdict
-from operator import attrgetter, itemgetter
+from operator import attrgetter
 
 import homeassistant.helpers.config_validation as cv
 import homeassistant.util.dt as dt_util
@@ -15,7 +14,8 @@ from homeassistant.helpers.event import track_state_change
 from homeassistant.helpers.typing import ConfigType, HomeAssistantType
 
 from .const import DOMAIN
-from .schemas import DEVICE_SCHEMA, TARIFF_SCHEMA, TIME_SCHEMA
+from .exceptions import NoValidTariff
+from .schemas import DEVICE_SCHEMA, TARIFF_SCHEMA
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ CONFIG_SCHEMA = vol.Schema(
     {
         DOMAIN: vol.Schema(
             {
-                vol.Required("monitor_entity"): cv.string,
+                vol.Required("monitor_entity"): cv.entity_id,
                 vol.Optional("tariffs"): vol.All(cv.ensure_list, [TARIFF_SCHEMA]),
                 vol.Optional("devices"): vol.All(cv.ensure_list, [DEVICE_SCHEMA]),
             }
@@ -76,7 +76,7 @@ class Tariff:
     def valid(self):
         """validate if the tariff is valid (active)"""
         now = dt_util.now()
-        _LOGGER.info("%r", self.days)
+
         if not len(self.days):
             _LOGGER.debug("No days are added, as result its always valid..")
             return True
@@ -106,7 +106,7 @@ class Tariff:
 
 
 class Device:
-    """Devices"""
+    """Represent a device that power controller can manage."""
 
     def __init__(self, hass, settings):
         self.modified = None
@@ -122,7 +122,6 @@ class Device:
         if not self.turn_off_entity:
             self.turn_off_entity = self.turn_on_entity
 
-    #@property
     def get_power_usage(self):
         try:
             pw = self.hass.states.get(self.power_usage)
@@ -130,7 +129,7 @@ class Device:
             pw = None
 
         if pw is None:
-            _LOGGER.info(
+            _LOGGER.debug(
                 "%s dont have a power_usage, using assumed_usage %s",
                 self.power_usage,
                 self.assumed_usage,
@@ -142,8 +141,7 @@ class Device:
         return float(pw)
 
     def _turn(self, mode=False):
-
-
+        """Helper to turn off on on a device"""
         if mode is True:
             m = SERVICE_TURN_ON
             entity_id = self.turn_on_entity
@@ -161,13 +159,13 @@ class Device:
 
         data = {ATTR_ENTITY_ID: entity_id} if entity_id else {}
         # Need to fix the domain.
-        _LOGGER.info("tried to %s %s %r", entity_id, m, data)
+        _LOGGER.debug("tried to %s %s %r", entity_id, m, data)
 
         #self.hass.services.call(domain, m, data)
 
     def toggle(self):
         if self.modified is None:
-            _LOGGER.info("cant toggle is the obj wasnt controlled.")
+            _LOGGER.info("Can't toggle and the device hasnt been controlled.")
         value = not self.modified
         return self._turn(value)
 
@@ -180,11 +178,10 @@ class Device:
 
 class PowerController:
     def __init__(self, hass, settings):
-        _LOGGER.info("%r", settings)
+        _LOGGER.debug("%r", settings)
         self.hass = hass
         self.settings = settings
         self._current_tariff = None
-        self.over_limit_for = 0
         self.first_over_limit = None
         self.devices = []
         self.tariffs = []
@@ -208,16 +205,16 @@ class PowerController:
     def check_tariff(self):
         """Check if we have a valid tariff we should use."""
         for tariff in self.tariffs:
-            if tariff.enabled:
+            if tariff.enabled and tariff.valid():
                 self._current_tariff = tariff
+                break
         else:
-            _LOGGER.info("no valid tariff")
+            raise NoValidTariff
 
     @property
     def current_power_usage(self):
         """There must be a better way to get it."""
         state = self.hass.states.get(self.settings.get("monitor_entity"))
-        _LOGGER.info("%r", state)
         try:
             return int(state.state)
         except ValueError:
@@ -227,7 +224,6 @@ class PowerController:
     def pick_minimal_power_reduction(self):
         """Turns off devices so we dont exceed the tariff limits."""
         _LOGGER.info("Checking what devices we can turn off")
-        #devs = defaultdict(dict)
         power_reduced_kwh = 0
         devs = []
 
@@ -254,20 +250,18 @@ class PowerController:
                 dev.turn_off()
 
     def should_reduce_power(self):
-        _LOGGER.info("current usage %s tariff limit %s", self.current_power_usage, self.current_tariff.tariff_limit)
+        #_LOGGER.info("current usage %s tariff limit %s", self.current_power_usage, self.current_tariff.tariff_limit)
         if self.current_power_usage > self.current_tariff.tariff_limit:
             if self.first_over_limit is None:
                 self.first_over_limit = time.time()
 
-
             if self.current_tariff.over_limit_acceptance_seconds > 0:
                 if time.time() - self.first_over_limit > self.current_tariff.over_limit_acceptance_seconds:
-                    _LOGGER.info("been over limit for more then over_limit_acceptance_seconds", self.current_tariff.over_limit_acceptance_seconds)
+                    _LOGGER.debug("Been over limit for more then over_limit_acceptance_seconds %s", self.current_tariff.over_limit_acceptance_seconds)
                     self.first_over_limit = None
-
                     return True
                 else:
-                    _LOGGER.info("We are over the limit")
+                    _LOGGER.info("We are over the limit, but we havnt been over enough")
                     return False
             else:
                 return True
@@ -275,6 +269,7 @@ class PowerController:
             return False
 
     def check_if_we_can_turn_on_devices(self):
+
         """Turn off any devices we can without exceeding the tariff"""
         # to turn on we dont allow temp usage to exceed tariff.
         for device in self.devices:
@@ -283,12 +278,8 @@ class PowerController:
                     device.turn_on()
 
     def update(self, power_usage=None):
-        _LOGGER.info("called update")
-
-        if self.current_tariff is None:
-            _LOGGER.info("No tariff exists")
-            # Just grab one...
-            self._current_tariff = self.tariffs[0]
+        """Main method that really handles most of the work."""
+        self.check_tariff()
 
         if self.current_tariff.valid():
             reduce_power = self.should_reduce_power()

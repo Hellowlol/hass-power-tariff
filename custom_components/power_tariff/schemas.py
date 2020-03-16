@@ -2,23 +2,19 @@ import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from homeassistant.const import WEEKDAYS
 
-TIME_SCHEMA = {vol.Optional("weekdays"): vol.All(cv.ensure_list, cv.string)}
-
-
-# not in use atm.
 DAY_SCHEMA = vol.Schema({
-    vol.Optional("start", default="00:00"): cv.time,
-    vol.Optional("end", default="23:59"): cv.time,
+    vol.Optional("start", default="00:00:00"): cv.time,
+    vol.Optional("end", default="23:59:59"): cv.time,
     vol.Optional("weekday", default=""): vol.In(WEEKDAYS),
 })
-
 
 TARIFF_SCHEMA = vol.Schema({
     vol.Required("name", default="dag"): cv.string,
     vol.Required("limit_kwh", default=1000): int,
     vol.Optional("over_limit_acceptance", default=0.0): cv.small_float,
-    vol.Optional("over_limit_acceptance_seconds", default=60): float,  # float
-    vol.Optional("days", default=""): vol.All(cv.ensure_list, [DAY_SCHEMA])
+    vol.Optional("over_limit_acceptance_seconds", default=60): float,
+    vol.Optional("days", default=list()): vol.Any(cv.ensure_list, [DAY_SCHEMA]),
+    vol.Optional("enabled", default=True): cv.boolean,
 })
 
 DEVICE_SCHEMA = vol.Schema({
