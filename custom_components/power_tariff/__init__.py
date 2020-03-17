@@ -10,12 +10,14 @@ from homeassistant.const import (ATTR_ENTITY_ID, EVENT_HOMEASSISTANT_START,
                                  SERVICE_TOGGLE, SERVICE_TURN_OFF,
                                  SERVICE_TURN_ON)
 from homeassistant.exceptions import ServiceNotFound
+from homeassistant.helpers import discovery
 from homeassistant.helpers.event import track_state_change
 from homeassistant.helpers.typing import ConfigType, HomeAssistantType
 
 from .const import DOMAIN
 from .exceptions import NoValidTariff
 from .schemas import DEVICE_SCHEMA, TARIFF_SCHEMA
+from .utils import get_entity_object
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,7 +36,7 @@ CONFIG_SCHEMA = vol.Schema(
 )
 
 
-def setup(hass, config) -> bool:
+def setup_org(hass, config) -> bool:
     """Set up using yaml config file."""
     _LOGGER.info("Setup zomg!")
     config = config[DOMAIN]
@@ -57,6 +59,51 @@ def setup(hass, config) -> bool:
         pc.ready = True
 
     pc.add_device(devs)
+    pc.add_tariff(tariffs)
+    hass.data[DOMAIN] = pc
+
+
+    hass.bus.listen(EVENT_HOMEASSISTANT_START, ha_ready_cb)
+    track_state_change(hass, entity_ids=config.get("monitor_entity"), action=cb)
+
+    return True
+
+
+
+def setup(hass, config) -> bool:
+    """Set up using yaml config file."""
+    _LOGGER.info("Setup switch¨method!")
+
+    config = config[DOMAIN]
+    pc = PowerController(hass, config)
+    devs = []
+    tariffs = []
+    for device in config.get("devices"):
+        dev = (hass, device)
+        devs.append(dev)
+
+    for tariff in config.get("tariffs"):
+        tar = Tariff(tariff)
+        tariffs.append(tar)
+
+    def cb(*args, **kwargs):
+        # We don't really care about the cb, it just kick off everthing.
+        pc.update()
+
+    def ha_ready_cb(event):
+        pc.ready = True
+        get_entity_object(hass, "switch.stor_kule")
+
+
+
+
+    hass.async_create_task(
+        discovery.async_load_platform(
+            hass, "switch", DOMAIN, config.get("devices"), config
+        )
+    )
+
+    #pc.add_device(devs)
     pc.add_tariff(tariffs)
     hass.data[DOMAIN] = pc
 
@@ -255,8 +302,12 @@ class PowerController:
         for device in sorted(self.devices, key=attrgetter("priority")):
             # Make sure we dont do anything
             # to disabled devices.
-            if device.enabled is False:
-                _LOGGER.info("Device %s is not enabled", device)
+            #if device.enabled is False:
+            #    _LOGGER.info("Device %s is not enabled", device)
+            #    continue
+
+            if device.is_on is False:
+                _LOGGER.info("Device has been manually disabled")
                 continue
 
             # Just to we dont spam the same command over and over.
@@ -278,7 +329,7 @@ class PowerController:
 
         if devs:
             for dev in devs:
-                dev.turn_off()
+                dev.proxy_turn_off()
 
     def should_reduce_power(self):
         if self.current_power_usage > self.current_tariff.tariff_limit:
@@ -308,12 +359,17 @@ class PowerController:
         """Turn off any devices we can without exceeding the tariff"""
         # to turn on we dont allow temp usage to exceed tariff.
         for device in self.devices:
-            if device.action == SERVICE_TURN_OFF:
-                _LOGGER.debug(
-                    "Device %r has been turned off by power controller, try to turn it on",
-                    device,
-                )
-                device.turn_on()
+            _LOGGER.info("%r %s", device, device.action)
+            if device.is_on and device.action == SERVICE_TURN_OFF:
+                if self.current_power_usage + device.get_power_usage() < self.current_tariff.tariff_limit:
+                    _LOGGER.debug(
+                        "Device %r has been turned off by power controller, try to turn it on",
+                        device,
+
+                    )
+                    device.proxy_turn_on()
+                else:
+                    _LOGGER.debug("Cant turn on %r without exceeding tariff_limit", device)
 
     def update(self, power_usage=None):
         """Main method that really handles most of the work."""
@@ -329,8 +385,3 @@ class PowerController:
                 self.pick_minimal_power_reduction()
             else:
                 self.check_if_we_can_turn_on_devices()
-
-    # def update(self):
-    #    # self.hass.helpers.entity_registry.async_get_registry()
-    #    for ent in self.hass.states.all():
-    #        pass
