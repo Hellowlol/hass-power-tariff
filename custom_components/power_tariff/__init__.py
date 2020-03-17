@@ -6,10 +6,10 @@ from operator import attrgetter
 import homeassistant.helpers.config_validation as cv
 import homeassistant.util.dt as dt_util
 import voluptuous as vol
-from homeassistant.const import (ATTR_ENTITY_ID, ATTR_TEMPERATURE,
-                                 CONF_PASSWORD, CONF_USERNAME,
-                                 ENTITY_MATCH_ALL, SERVICE_TURN_OFF,
+from homeassistant.const import (ATTR_ENTITY_ID, EVENT_HOMEASSISTANT_START,
+                                 SERVICE_TOGGLE, SERVICE_TURN_OFF,
                                  SERVICE_TURN_ON)
+from homeassistant.exceptions import ServiceNotFound
 from homeassistant.helpers.event import track_state_change
 from homeassistant.helpers.typing import ConfigType, HomeAssistantType
 
@@ -49,14 +49,18 @@ def setup(hass, config) -> bool:
         tar = Tariff(tariff)
         tariffs.append(tar)
 
-
     def cb(*args, **kwargs):
         # We don't really care about the cb, it just kick off everthing.
         pc.update()
 
+    def ha_ready_cb(event):
+        pc.ready = True
+
     pc.add_device(devs)
     pc.add_tariff(tariffs)
     hass.data[DOMAIN] = pc
+
+    hass.bus.listen(EVENT_HOMEASSISTANT_START, ha_ready_cb)
     track_state_change(hass, entity_ids=config.get("monitor_entity"), action=cb)
 
     return True
@@ -83,33 +87,38 @@ class Tariff:
 
         else:
             for day in self.days:
-                if day["weekday"] == now.strftime('%a').lower():
+                if day["weekday"] == now.strftime("%a").lower():
                     _LOGGER.debug("It's the corrent day")
                     if day["start"] < now.time() and now.time() < day["end"]:
-                        _LOGGER.debug("now %s between start %s and end %s", now.time(), day["start"], day["end"])
+                        _LOGGER.debug(
+                            "now %s between start %s and end %s",
+                            now.time(),
+                            day["start"],
+                            day["end"],
+                        )
                         return True
                     else:
                         continue
                 else:
-                    _LOGGER.debug("today is not %s %s", day["weekday"], now.strftime('%a'))
+                    _LOGGER.debug(
+                        "today is not %s %s", day["weekday"], now.strftime("%a")
+                    )
                     continue
 
         return False
 
-
     @property
     def tariff_limit(self):
         """ """
-        return self.limit_kwh * (
-            1 + self.over_limit_acceptance
-        )
+        return self.limit_kwh * (1 + self.over_limit_acceptance)
 
 
 class Device:
     """Represent a device that power controller can manage."""
 
     def __init__(self, hass, settings):
-        self.modified = None
+        # Last action
+        self.action = None
         self.hass = hass
         self.enabled = settings.get("enabled")
         self.priority = settings.get("priority")
@@ -142,6 +151,13 @@ class Device:
 
     def _turn(self, mode=False):
         """Helper to turn off on on a device"""
+
+        # Some where we need to check if the device still has the same action as before
+        # We want a user to able to manually turning on/off the device
+        # and if thats done we should touch the device for some periode of time.
+        # Maybe we needed a grace periode for some kind, so we dont turn off the hotplate
+        # during dinner. :D
+
         if mode is True:
             m = SERVICE_TURN_ON
             entity_id = self.turn_on_entity
@@ -149,24 +165,27 @@ class Device:
             m = SERVICE_TURN_OFF
             entity_id = self.turn_off_entity
 
-        self.modified = mode
+        domain = "homeassistant"
 
-        # There must be a helper for this..
-        domain = entity_id.split(".")[0]
-        # A scene can only turn on, never off
-        if domain == "scene":
-            m = SERVICE_TURN_ON
+        service_data = {ATTR_ENTITY_ID: entity_id} if entity_id else {}
 
-        data = {ATTR_ENTITY_ID: entity_id} if entity_id else {}
-        # Need to fix the domain.
-        _LOGGER.debug("tried to %s %s %r", entity_id, m, data)
+        _LOGGER.debug(
+            "tried to called with domain %s service %s %r", domain, m, service_data
+        )
+        try:
+            self.hass.services.call(domain, m, service_data)
+        except ServiceNotFound:
+            _LOGGER.info("Maybe Service wasnt ready yet")
+            return
 
-        #self.hass.services.call(domain, m, data)
+        self.action = mode
 
     def toggle(self):
+        # FIX ME
+        t = SERVICE_TOGGLE
         if self.modified is None:
             _LOGGER.info("Can't toggle and the device hasnt been controlled.")
-        value = not self.modified
+        value = not self.action
         return self._turn(value)
 
     def turn_on(self):
@@ -174,6 +193,9 @@ class Device:
 
     def turn_off(self):
         return self._turn(False)
+
+    def reset(self):
+        self.action = None
 
 
 class PowerController:
@@ -185,6 +207,7 @@ class PowerController:
         self.first_over_limit = None
         self.devices = []
         self.tariffs = []
+        self.ready = False
 
     def add_device(self, device):
         if isinstance(device, list):
@@ -223,7 +246,7 @@ class PowerController:
 
     def pick_minimal_power_reduction(self):
         """Turns off devices so we dont exceed the tariff limits."""
-        _LOGGER.info("Checking what devices we can turn off")
+        _LOGGER.debug("Checking what devices we can turn off")
         power_reduced_kwh = 0
         devs = []
 
@@ -234,6 +257,14 @@ class PowerController:
             # to disabled devices.
             if device.enabled is False:
                 _LOGGER.info("Device %s is not enabled", device)
+                continue
+
+            # Just to we dont spam the same command over and over.
+            # We also need to be able to handle that ha user has turned something on.
+            if device.action is not None:
+                _LOGGER.debug(
+                    "Device %s alread has action %s skipping it.".device.action
+                )
                 continue
 
             power_usage_state = device.get_power_usage()
@@ -250,14 +281,19 @@ class PowerController:
                 dev.turn_off()
 
     def should_reduce_power(self):
-        #_LOGGER.info("current usage %s tariff limit %s", self.current_power_usage, self.current_tariff.tariff_limit)
         if self.current_power_usage > self.current_tariff.tariff_limit:
             if self.first_over_limit is None:
                 self.first_over_limit = time.time()
 
             if self.current_tariff.over_limit_acceptance_seconds > 0:
-                if time.time() - self.first_over_limit > self.current_tariff.over_limit_acceptance_seconds:
-                    _LOGGER.debug("Been over limit for more then over_limit_acceptance_seconds %s", self.current_tariff.over_limit_acceptance_seconds)
+                if (
+                    time.time() - self.first_over_limit
+                    > self.current_tariff.over_limit_acceptance_seconds
+                ):
+                    _LOGGER.debug(
+                        "Been over limit for more then over_limit_acceptance_seconds %s",
+                        self.current_tariff.over_limit_acceptance_seconds,
+                    )
                     self.first_over_limit = None
                     return True
                 else:
@@ -269,28 +305,32 @@ class PowerController:
             return False
 
     def check_if_we_can_turn_on_devices(self):
-
         """Turn off any devices we can without exceeding the tariff"""
         # to turn on we dont allow temp usage to exceed tariff.
         for device in self.devices:
-            if device.modified is not None:
-                if device.modified is False:
-                    device.turn_on()
+            if device.action == SERVICE_TURN_OFF:
+                _LOGGER.debug(
+                    "Device %r has been turned off by power controller, try to turn it on",
+                    device,
+                )
+                device.turn_on()
 
     def update(self, power_usage=None):
         """Main method that really handles most of the work."""
+        if self.ready is False:
+            return
+
         self.check_tariff()
 
         if self.current_tariff.valid():
             reduce_power = self.should_reduce_power()
-            _LOGGER.info("should_reduce_power %s", reduce_power)
+            _LOGGER.debug("should_reduce_power %s", reduce_power)
             if reduce_power:
                 self.pick_minimal_power_reduction()
             else:
                 self.check_if_we_can_turn_on_devices()
 
-
-    #def update(self):
+    # def update(self):
     #    # self.hass.helpers.entity_registry.async_get_registry()
     #    for ent in self.hass.states.all():
     #        pass
