@@ -263,7 +263,7 @@ class PowerController:
             # We also need to be able to handle that ha user has turned something on.
             if device.action is not None:
                 _LOGGER.debug(
-                    "Device %s alread has action %s skipping it.".device.action
+                    "Device %s alread has action %s skipping it.", device.action
                 )
                 continue
 
