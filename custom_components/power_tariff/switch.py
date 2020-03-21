@@ -2,17 +2,16 @@
 import logging
 
 from homeassistant.components.switch import SwitchDevice
-from homeassistant.const import (ATTR_ENTITY_ID, SERVICE_TOGGLE,
-                                 SERVICE_TURN_OFF, SERVICE_TURN_ON, STATE_ON)
-from homeassistant.helpers.config_validation import (  # noqa: F401
-    PLATFORM_SCHEMA, PLATFORM_SCHEMA_BASE)
+from homeassistant.const import (ATTR_ENTITY_ID, SERVICE_TURN_OFF,
+                                 SERVICE_TURN_ON, STATE_ON)
+from homeassistant.exceptions import ServiceNotFound
+from homeassistant.helpers.config_validation import (PLATFORM_SCHEMA,
+                                                     PLATFORM_SCHEMA_BASE)
 
-from .const import DOMAIN
+from .const import DOMAIN, POWER_ATTRS
 from .utils import get_entity_object
 
-#SCAN_INTERVAL = timedelta(seconds=10)
 _LOGGER = logging.getLogger(__name__)
-
 
 
 async def async_setup_platform(
@@ -31,10 +30,6 @@ class PowerDevice(SwitchDevice):
     """Represent a device that power controller can manage."""
 
     def __init__(self, hass, pc, settings):
-        _LOGGER.info("inside PowerDevice __init__")
-        _LOGGER.info("hass: %r", hass)
-        _LOGGER.info("pc: %r", pc)
-        _LOGGER.info("settings %r", settings)
         # Last action
         self.action = None
         self.hass = hass
@@ -52,22 +47,24 @@ class PowerDevice(SwitchDevice):
             self.turn_off_entity = self.turn_on_entity
 
     def get_power_usage(self):
-        try:
-            pw = self.hass.states.get(self.power_usage)
-        except AttributeError:
-            pw = None
 
-        if pw is None:
-            _LOGGER.debug(
-                "%s dont have a power_usage, using assumed_usage %s",
-                self.power_usage,
-                self.assumed_usage,
-            )
-            pw = self.assumed_usage
+        if self.power_usage is None:
+            for attr in POWER_ATTRS:
+                state = self.hass.states.get(self.turn_on)
+
+                if state and state.attributes.get(attr) is not None:
+                    _LOGGER.debug("Using attribute %s on %s to get the power usage", attr, self.turn_on)
+                    return float(state.attributes.get(attr))
+
+            return float(self.assumed_usage)
+
         else:
-            pw = pw.state
+            try:
+                return float(self.hass.states.get(self.power_usage))
+            except (AttributeError, TypeError):
+                _LOGGER.debug("Failed to get the power usage from %s, using assumed usage", self.power_usage)
+                return float(self.assumed_usage)
 
-        return float(pw)
 
     def _turn(self, mode=False):
         """Helper to turn off on on a device"""

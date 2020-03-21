@@ -6,10 +6,8 @@ from operator import attrgetter
 import homeassistant.helpers.config_validation as cv
 import homeassistant.util.dt as dt_util
 import voluptuous as vol
-from homeassistant.const import (ATTR_ENTITY_ID, EVENT_HOMEASSISTANT_START,
-                                 SERVICE_TOGGLE, SERVICE_TURN_OFF,
+from homeassistant.const import (EVENT_HOMEASSISTANT_START, SERVICE_TURN_OFF,
                                  SERVICE_TURN_ON)
-from homeassistant.exceptions import ServiceNotFound
 from homeassistant.helpers import discovery
 from homeassistant.helpers.event import track_state_change
 from homeassistant.helpers.typing import ConfigType, HomeAssistantType
@@ -17,7 +15,6 @@ from homeassistant.helpers.typing import ConfigType, HomeAssistantType
 from .const import DOMAIN
 from .exceptions import NoValidTariff
 from .schemas import DEVICE_SCHEMA, TARIFF_SCHEMA
-from .utils import get_entity_object
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,7 +24,9 @@ CONFIG_SCHEMA = vol.Schema(
         DOMAIN: vol.Schema(
             {
                 vol.Required("monitor_entity"): cv.entity_id,
-                vol.Optional("tariffs"): vol.All(cv.ensure_list, [TARIFF_SCHEMA]),
+                vol.Optional("tariffs"): vol.All(
+                    cv.ensure_list, [lambda value: TARIFF_SCHEMA(value)]
+                ),
                 vol.Optional("devices"): vol.All(cv.ensure_list, [DEVICE_SCHEMA]),
             }
         )
@@ -36,41 +35,7 @@ CONFIG_SCHEMA = vol.Schema(
 )
 
 
-def setup_org(hass, config) -> bool:
-    """Set up using yaml config file."""
-    _LOGGER.info("Setup zomg!")
-    config = config[DOMAIN]
-    pc = PowerController(hass, config)
-    devs = []
-    tariffs = []
-    for device in config.get("devices"):
-        dev = Device(hass, device)
-        devs.append(dev)
-
-    for tariff in config.get("tariffs"):
-        tar = Tariff(tariff)
-        tariffs.append(tar)
-
-    def cb(*args, **kwargs):
-        # We don't really care about the cb, it just kick off everthing.
-        pc.update()
-
-    def ha_ready_cb(event):
-        pc.ready = True
-
-    pc.add_device(devs)
-    pc.add_tariff(tariffs)
-    hass.data[DOMAIN] = pc
-
-
-    hass.bus.listen(EVENT_HOMEASSISTANT_START, ha_ready_cb)
-    track_state_change(hass, entity_ids=config.get("monitor_entity"), action=cb)
-
-    return True
-
-
-
-def setup(hass, config) -> bool:
+def setup(hass: HomeAssistantType, config: ConfigType) -> bool:
     """Set up using yaml config file."""
     _LOGGER.info("Setup switch¨method!")
 
@@ -92,23 +57,19 @@ def setup(hass, config) -> bool:
 
     def ha_ready_cb(event):
         pc.ready = True
-        get_entity_object(hass, "switch.stor_kule")
+        # get_entity_object(hass, "switch.stor_kule")
 
+    pc.add_tariff(tariffs)
+    hass.data[DOMAIN] = pc
 
-
+    hass.bus.listen(EVENT_HOMEASSISTANT_START, ha_ready_cb)
+    track_state_change(hass, entity_ids=config.get("monitor_entity"), action=cb)
 
     hass.async_create_task(
         discovery.async_load_platform(
             hass, "switch", DOMAIN, config.get("devices"), config
         )
     )
-
-    #pc.add_device(devs)
-    pc.add_tariff(tariffs)
-    hass.data[DOMAIN] = pc
-
-    hass.bus.listen(EVENT_HOMEASSISTANT_START, ha_ready_cb)
-    track_state_change(hass, entity_ids=config.get("monitor_entity"), action=cb)
 
     return True
 
@@ -122,35 +83,49 @@ class Tariff:
         self.over_limit_acceptance_seconds = settings.get(
             "over_limit_acceptance_seconds"
         )
-        self.days = settings.get("days")
+        self.restrictions = settings.get("restrictions", {})
 
     def valid(self):
         """validate if the tariff is valid (active)"""
         now = dt_util.now()
 
-        if not len(self.days):
-            _LOGGER.debug("No days are added, as result its always valid..")
+        if not len(self.restrictions):
+            _LOGGER.debug("No restrictions are added, as result its always valid..")
             return True
-
         else:
-            for day in self.days:
-                if day["weekday"] == now.strftime("%a").lower():
-                    _LOGGER.debug("It's the corrent day")
-                    if day["start"] < now.time() and now.time() < day["end"]:
-                        _LOGGER.debug(
-                            "now %s between start %s and end %s",
-                            now.time(),
-                            day["start"],
-                            day["end"],
-                        )
+            # Check for valid date range
+            if (
+                self.restrictions["date"]["start"] < now.date()
+                and now.date() < self.restrictions["date"]["end"]
+            ):
+                if now.strftime("%a").lower() in self.restrictions["weekday"]:
+                    if (
+                        self.restrictions["time"]["start"] < now.time()
+                        and now.time() < self.restrictions["time"]["end"]
+                    ):
                         return True
                     else:
-                        continue
+                        _LOGGER.debug(
+                            "%s  is not in valid time range start %s end %s",
+                            now.time(),
+                            self.restrictions["time"]["start"],
+                            self.restrictions["time"]["end"],
+                        )
+
                 else:
                     _LOGGER.debug(
-                        "today is not %s %s", day["weekday"], now.strftime("%a")
+                        "today %s is not in %s",
+                        "".join(self.restrictions["weekday"]),
+                        now.strftime("%a"),
                     )
-                    continue
+
+            else:
+                _LOGGER.debug(
+                    "%s is not in valid date range start: %s end %s",
+                    now.date(),
+                    self.restrictions["date"]["start"],
+                    self.restrictions["date"]["end"],
+                )
 
         return False
 
@@ -158,91 +133,6 @@ class Tariff:
     def tariff_limit(self):
         """ """
         return self.limit_kwh * (1 + self.over_limit_acceptance)
-
-
-class Device:
-    """Represent a device that power controller can manage."""
-
-    def __init__(self, hass, settings):
-        # Last action
-        self.action = None
-        self.hass = hass
-        self.enabled = settings.get("enabled")
-        self.priority = settings.get("priority")
-        # Enitity to get the power usage
-        self.power_usage = settings.get("power_usage")
-        self.assumed_usage = settings.get("assumed_usage")
-        self.turn_on_entity = settings.get("turn_on")
-        self.turn_off_entity = settings.get("turn_off")
-
-        if not self.turn_off_entity:
-            self.turn_off_entity = self.turn_on_entity
-
-    def get_power_usage(self):
-        try:
-            pw = self.hass.states.get(self.power_usage)
-        except AttributeError:
-            pw = None
-
-        if pw is None:
-            _LOGGER.debug(
-                "%s dont have a power_usage, using assumed_usage %s",
-                self.power_usage,
-                self.assumed_usage,
-            )
-            pw = self.assumed_usage
-        else:
-            pw = pw.state
-
-        return float(pw)
-
-    def _turn(self, mode=False):
-        """Helper to turn off on on a device"""
-
-        # Some where we need to check if the device still has the same action as before
-        # We want a user to able to manually turning on/off the device
-        # and if thats done we should touch the device for some periode of time.
-        # Maybe we needed a grace periode for some kind, so we dont turn off the hotplate
-        # during dinner. :D
-
-        if mode is True:
-            m = SERVICE_TURN_ON
-            entity_id = self.turn_on_entity
-        else:
-            m = SERVICE_TURN_OFF
-            entity_id = self.turn_off_entity
-
-        domain = "homeassistant"
-
-        service_data = {ATTR_ENTITY_ID: entity_id} if entity_id else {}
-
-        _LOGGER.debug(
-            "tried to called with domain %s service %s %r", domain, m, service_data
-        )
-        try:
-            self.hass.services.call(domain, m, service_data)
-        except ServiceNotFound:
-            _LOGGER.info("Maybe Service wasnt ready yet")
-            return
-
-        self.action = mode
-
-    def toggle(self):
-        # FIX ME
-        t = SERVICE_TOGGLE
-        if self.modified is None:
-            _LOGGER.info("Can't toggle and the device hasnt been controlled.")
-        value = not self.action
-        return self._turn(value)
-
-    def turn_on(self):
-        return self._turn(True)
-
-    def turn_off(self):
-        return self._turn(False)
-
-    def reset(self):
-        self.action = None
 
 
 class PowerController:
@@ -300,14 +190,8 @@ class PowerController:
         current_power_usage = self.current_power_usage
 
         for device in sorted(self.devices, key=attrgetter("priority")):
-            # Make sure we dont do anything
-            # to disabled devices.
-            #if device.enabled is False:
-            #    _LOGGER.info("Device %s is not enabled", device)
-            #    continue
-
             if device.is_on is False:
-                _LOGGER.info("Device has been manually disabled")
+                _LOGGER.info("Device %r has been manually disabled", device)
                 continue
 
             # Just to we dont spam the same command over and over.
@@ -353,23 +237,32 @@ class PowerController:
             else:
                 return True
         else:
+            _LOGGER.debug(
+                "current_power_usage: %s, limit %s",
+                self.current_power_usage,
+                self.current_tariff.tariff_limit,
+            )
             return False
 
     def check_if_we_can_turn_on_devices(self):
         """Turn off any devices we can without exceeding the tariff"""
         # to turn on we dont allow temp usage to exceed tariff.
         for device in self.devices:
-            _LOGGER.info("%r %s", device, device.action)
+            _LOGGER.debug("Checking if we can turn on %s", device)
             if device.is_on and device.action == SERVICE_TURN_OFF:
-                if self.current_power_usage + device.get_power_usage() < self.current_tariff.tariff_limit:
+                if (
+                    self.current_power_usage + device.get_power_usage()
+                    < self.current_tariff.tariff_limit
+                ):
                     _LOGGER.debug(
                         "Device %r has been turned off by power controller, try to turn it on",
                         device,
-
                     )
                     device.proxy_turn_on()
                 else:
-                    _LOGGER.debug("Cant turn on %r without exceeding tariff_limit", device)
+                    _LOGGER.debug(
+                        "Cant turn on %r without exceeding tariff_limit", device
+                    )
 
     def update(self, power_usage=None):
         """Main method that really handles most of the work."""
@@ -380,7 +273,11 @@ class PowerController:
 
         if self.current_tariff.valid():
             reduce_power = self.should_reduce_power()
-            _LOGGER.debug("should_reduce_power %s", reduce_power)
+            _LOGGER.debug(
+                "Should we reduce power: %s, current usage: %s",
+                reduce_power,
+                self.current_power_usage,
+            )
             if reduce_power:
                 self.pick_minimal_power_reduction()
             else:
