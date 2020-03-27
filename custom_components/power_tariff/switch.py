@@ -3,7 +3,9 @@ import logging
 
 from homeassistant.components.switch import SwitchDevice
 from homeassistant.const import (ATTR_ENTITY_ID, SERVICE_TURN_OFF,
-                                 SERVICE_TURN_ON, STATE_ON)
+                                 SERVICE_TURN_ON, STATE_OFF, STATE_ON,
+                                 STATE_PROBLEM, STATE_UNAVAILABLE,
+                                 STATE_UNKNOWN)
 from homeassistant.exceptions import ServiceNotFound
 from homeassistant.helpers.config_validation import (PLATFORM_SCHEMA,
                                                      PLATFORM_SCHEMA_BASE)
@@ -26,6 +28,10 @@ async def async_setup_platform(
     pc.add_device(devices)
 
 
+STATE_AS_ON = (STATE_ON,)
+STATE_AS_OFF = (STATE_OFF,)
+
+
 class PowerDevice(SwitchDevice):
     """Represent a device that power controller can manage."""
 
@@ -41,7 +47,8 @@ class PowerDevice(SwitchDevice):
         self.turn_on_entity = settings.get("turn_on")
         self.turn_off_entity = settings.get("turn_off")
         self._enabled = settings.get("enabled")
-        self._proxy_device = None
+        self._proxy_device_off = None
+        self._proxy_device_on = None
 
         if not self.turn_off_entity:
             self.turn_off_entity = self.turn_on_entity
@@ -81,7 +88,7 @@ class PowerDevice(SwitchDevice):
              "turn_on": True}
 
         if self.action is not None and d[self.action] is not self.is_proxy_device_on():
-            _LOGGER.info("Proxy device has changed status without power controller, not doing anything.")
+            _LOGGER.info("Proxy device has changed status without power controller doing it (fx manually pressed the button, a automation or something), not doing anything.")
             return
 
         if mode is True:
@@ -95,7 +102,7 @@ class PowerDevice(SwitchDevice):
 
         service_data = {ATTR_ENTITY_ID: entity_id} if entity_id else {}
 
-        _LOGGER.debug(
+        _LOGGER.info(
             "tried to called with domain %s service %s %r", domain, m, service_data
         )
         try:
@@ -118,25 +125,39 @@ class PowerDevice(SwitchDevice):
         return self._turn(False)
 
     def proxy_turn_on(self):
-        return self._turn(False)
+        return self._turn(True)
 
-    def is_proxy_device(self, entity_id):
-        obj = get_entity_object(self.hass, entity_id)
-
-        if obj is not None:
-            if hasattr(obj, "is_on"):
-                return obj.is_on
-            else:
-                _LOGGER.warning("%s has no is_on", self.turn_on_entity)
+    def _proxy_ok(self, proxy):
+        state = self.hass.states.get(proxy.entity_id)
+        if state is not None:
+            if state.state in (STATE_PROBLEM, STATE_UNAVAILABLE):
+                _LOGGER.info("%s has state %s defaulting to False", proxy.entity_id, state.state)
                 return False
 
-        return False
+        if hasattr(proxy, "is_on"):
+            return proxy.is_on
+        else:
+            return False
 
     def is_proxy_device_on(self):
-        return self.is_proxy_device(self.turn_on_entity) is True
+        if self._proxy_device_on is None:
+            found = get_entity_object(self.hass, self.turn_on_entity)
+            if found:
+                self._proxy_device_on = found
+
+        if self._proxy_device_on is not None:
+            return self._proxy_ok(self._proxy_device_on) is True
+        return False
 
     def is_proxy_device_off(self):
-        return self.is_proxy_device(self.turn_off_entity) is False
+        if self._proxy_device_off is None:
+            found = get_entity_object(self.hass, self.turn_off_entity)
+            if found:
+                self._proxy_device_off = found
+
+        if self._proxy_device_off is not None:
+            return self._proxy_ok(self._proxy_device_off) is False
+        return False
 
     @property
     def device_state_attributes(self):
@@ -153,3 +174,7 @@ class PowerDevice(SwitchDevice):
     @property
     def is_on(self):
         return bool(self._enabled)
+
+    @property
+    def state(self):
+        return STATE_ON if bool(self.enabled) else STATE_OFF

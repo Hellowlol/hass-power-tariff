@@ -37,7 +37,7 @@ CONFIG_SCHEMA = vol.Schema(
 
 def setup(hass: HomeAssistantType, config: ConfigType) -> bool:
     """Set up using yaml config file."""
-    _LOGGER.info("Setup switch¨method!")
+    _LOGGER.info("Setup switch method!")
 
     config = config[DOMAIN]
     pc = PowerController(hass, config)
@@ -76,6 +76,7 @@ def setup(hass: HomeAssistantType, config: ConfigType) -> bool:
 
 class Tariff:
     def __init__(self, settings):
+        self.name = settings.get("name")
         self.enabled = settings.get("enabled")
         self.priority = settings.get("priority")
         self.limit_kwh = settings.get("limit_kwh")
@@ -146,6 +147,12 @@ class PowerController:
         self.tariffs = []
         self.ready = False
 
+        # Remove me later
+        import itertools
+        t = [2000] * 6 + [3000] * 6 + [2500] * 6 + [1000] * 6
+        self.t = itertools.cycle(t)
+        # remove me later.
+
     def add_device(self, device):
         if isinstance(device, list):
             self.devices.extend(device)
@@ -163,9 +170,10 @@ class PowerController:
         return self._current_tariff
 
     def check_tariff(self):
-        """Check if we have a valid tariff we should use."""
+        """Check if we have a valid tariff we should use, sets the first valid tariff as the current"""
         for tariff in self.tariffs:
             if tariff.enabled and tariff.valid():
+                _LOGGER.debug("Selected %s as current tariff", tariff.name)
                 self._current_tariff = tariff
                 break
         else:
@@ -181,6 +189,11 @@ class PowerController:
             # unknown state comes to mind.
             return 0
 
+    @property
+    def current_power_usage_fake(self):
+        """Just faked, just tired of turning on and off the stove.."""
+        return int(next(self.t))
+
     def pick_minimal_power_reduction(self):
         """Turns off devices so we dont exceed the tariff limits."""
         _LOGGER.debug("Checking what devices we can turn off")
@@ -192,14 +205,6 @@ class PowerController:
         for device in sorted(self.devices, key=attrgetter("priority")):
             if device.is_on is False:
                 _LOGGER.info("Device %r has been manually disabled", device)
-                continue
-
-            # Just to we dont spam the same command over and over.
-            # We also need to be able to handle that ha user has turned something on.
-            if device.action is not None:
-                _LOGGER.debug(
-                    "Device %r alread has action %s skipping it.", device, device.action
-                )
                 continue
 
             power_usage_state = device.get_power_usage()
@@ -247,22 +252,30 @@ class PowerController:
     def check_if_we_can_turn_on_devices(self):
         """Turn off any devices we can without exceeding the tariff"""
         # to turn on we dont allow temp usage to exceed tariff.
+        _LOGGER.debug("Checking if we can turn on any devices")
         for device in self.devices:
-            _LOGGER.debug("Checking if we can turn on %s", device)
-            if device.is_on and device.action == SERVICE_TURN_OFF:
+            # Make sure we only turn on stuff that pc has turned off.
+            if device.action == SERVICE_TURN_OFF and device.is_proxy_device_off():
                 if (
+                    # Dunno how helpfull it is to check the device current usage as
+                    # if its turned off it should be very low.
                     self.current_power_usage + device.get_power_usage()
                     < self.current_tariff.tariff_limit
                 ):
                     _LOGGER.debug(
-                        "Device %r has been turned off by power controller, try to turn it on",
-                        device,
+                        "Device %s has been turned off by power controller, tring to turn it on",
+                        device.turn_on_entity,
                     )
                     device.proxy_turn_on()
                 else:
                     _LOGGER.debug(
-                        "Cant turn on %r without exceeding tariff_limit", device
+                        "Cant turn on %s without exceeding tariff_limit",
+                        device.turn_on_entity,
                     )
+            else:
+                _LOGGER.debug(
+                    "%s is off or wasnt turned off by pc.", device.turn_on_entity
+                )
 
     def update(self, power_usage=None):
         """Main method that really handles most of the work."""
