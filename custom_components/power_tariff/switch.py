@@ -73,7 +73,7 @@ class PowerDevice(SwitchDevice):
                 return float(self.assumed_usage)
 
 
-    def _turn(self, mode=False):
+    async def _turn(self, mode=False):
         """Helper to turn off on on a device"""
 
         # Some where we need to check if the device still has the same action as before
@@ -87,7 +87,8 @@ class PowerDevice(SwitchDevice):
              "turn_off": False,
              "turn_on": True}
 
-        if self.action is not None and d[self.action] is not self.is_proxy_device_on():
+        act = self.is_proxy_device_on()
+        if self.action is not None and d[self.action] is not act:
             _LOGGER.info("Proxy device has changed status without power controller doing it (fx manually pressed the button, a automation or something), not doing anything.")
             return
 
@@ -106,7 +107,7 @@ class PowerDevice(SwitchDevice):
             "tried to called with domain %s service %s %r", domain, m, service_data
         )
         try:
-            self.hass.services.call(domain, m, service_data)
+            await self.hass.services.async_call(domain, m, service_data)
         except ServiceNotFound:
             _LOGGER.info("Maybe Service wasnt ready yet")
             return
@@ -121,11 +122,11 @@ class PowerDevice(SwitchDevice):
         """Turn off monitoring of this device"""
         self._enabled = False
 
-    def proxy_turn_off(self):
-        return self._turn(False)
+    async def proxy_turn_off(self):
+        return await self._turn(False)
 
-    def proxy_turn_on(self):
-        return self._turn(True)
+    async def proxy_turn_on(self):
+        return await self._turn(True)
 
     def _proxy_ok(self, proxy):
         state = self.hass.states.get(proxy.entity_id)

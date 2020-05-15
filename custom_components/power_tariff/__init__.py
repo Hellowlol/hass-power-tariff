@@ -1,4 +1,5 @@
 """Support for power tariff."""
+import asyncio
 import logging
 import time
 from operator import attrgetter
@@ -9,7 +10,8 @@ import voluptuous as vol
 from homeassistant.const import (EVENT_HOMEASSISTANT_START, SERVICE_TURN_OFF,
                                  SERVICE_TURN_ON)
 from homeassistant.helpers import discovery
-from homeassistant.helpers.event import track_state_change
+from homeassistant.helpers.event import (async_track_state_change,
+                                         track_state_change)
 from homeassistant.helpers.typing import ConfigType, HomeAssistantType
 
 from .const import DOMAIN
@@ -35,7 +37,7 @@ CONFIG_SCHEMA = vol.Schema(
 )
 
 
-def setup(hass: HomeAssistantType, config: ConfigType) -> bool:
+async def async_setup(hass: HomeAssistantType, config: ConfigType) -> bool:
     """Set up using yaml config file."""
     _LOGGER.info("Setup switch method!")
 
@@ -51,26 +53,28 @@ def setup(hass: HomeAssistantType, config: ConfigType) -> bool:
         tar = Tariff(tariff)
         tariffs.append(tar)
 
-    def cb(*args, **kwargs):
+    async def cb(*args, **kwargs):
         # We don't really care about the cb, it just kick off everthing.
-        pc.update()
+        await pc.update()
 
-    def ha_ready_cb(event):
-        pc.ready = True
+    async def ha_ready_cb(event):
+        _LOGGER.info("READY")
+        #await asyncio.sleep(30)
+    #    pc.ready = True
         # get_entity_object(hass, "switch.stor_kule")
 
     pc.add_tariff(tariffs)
     hass.data[DOMAIN] = pc
 
-    hass.bus.listen(EVENT_HOMEASSISTANT_START, ha_ready_cb)
-    track_state_change(hass, entity_ids=config.get("monitor_entity"), action=cb)
+    hass.bus.async_listen(EVENT_HOMEASSISTANT_START, ha_ready_cb)
+    async_track_state_change(hass, entity_ids=config.get("monitor_entity"), action=cb)
 
     hass.async_create_task(
         discovery.async_load_platform(
             hass, "switch", DOMAIN, config.get("devices"), config
         )
     )
-
+    _LOGGER.debug("at end")
     return True
 
 
@@ -194,13 +198,14 @@ class PowerController:
         """Just faked, just tired of turning on and off the stove.."""
         return int(next(self.t))
 
-    def pick_minimal_power_reduction(self):
+    async def pick_minimal_power_reduction(self):
         """Turns off devices so we dont exceed the tariff limits."""
         _LOGGER.debug("Checking what devices we can turn off")
         power_reduced_kwh = 0
         devs = []
 
-        current_power_usage = self.current_power_usage
+        #current_power_usage = self.current_power_usage
+        current_power_usage = self.current_power_usage_fake
 
         for device in sorted(self.devices, key=attrgetter("priority")):
             if device.is_on is False:
@@ -218,10 +223,11 @@ class PowerController:
 
         if devs:
             for dev in devs:
-                dev.proxy_turn_off()
+                await dev.proxy_turn_off()
 
-    def should_reduce_power(self):
-        if self.current_power_usage > self.current_tariff.tariff_limit:
+    async def should_reduce_power(self):
+        if self.current_power_usage_fake > self.current_tariff.tariff_limit:
+        #if self.current_power_usage > self.current_tariff.tariff_limit:
             if self.first_over_limit is None:
                 self.first_over_limit = time.time()
 
@@ -249,7 +255,7 @@ class PowerController:
             )
             return False
 
-    def check_if_we_can_turn_on_devices(self):
+    async def check_if_we_can_turn_on_devices(self):
         """Turn off any devices we can without exceeding the tariff"""
         # to turn on we dont allow temp usage to exceed tariff.
         _LOGGER.debug("Checking if we can turn on any devices")
@@ -259,6 +265,7 @@ class PowerController:
                 if (
                     # Dunno how helpfull it is to check the device current usage as
                     # if its turned off it should be very low.
+
                     self.current_power_usage + device.get_power_usage()
                     < self.current_tariff.tariff_limit
                 ):
@@ -266,7 +273,7 @@ class PowerController:
                         "Device %s has been turned off by power controller, tring to turn it on",
                         device.turn_on_entity,
                     )
-                    device.proxy_turn_on()
+                    await device.proxy_turn_on()
                 else:
                     _LOGGER.debug(
                         "Cant turn on %s without exceeding tariff_limit",
@@ -277,21 +284,24 @@ class PowerController:
                     "%s is off or wasnt turned off by pc.", device.turn_on_entity
                 )
 
-    def update(self, power_usage=None):
+    async def update(self, power_usage=None):
         """Main method that really handles most of the work."""
-        if self.ready is False:
-            return
+        _LOGGER.info("Running update")
+        #if self.ready is False:
+        #    return
 
         self.check_tariff()
 
         if self.current_tariff.valid():
-            reduce_power = self.should_reduce_power()
+            reduce_power = await self.should_reduce_power()
             _LOGGER.debug(
                 "Should we reduce power: %s, current usage: %s",
                 reduce_power,
                 self.current_power_usage,
             )
             if reduce_power:
-                self.pick_minimal_power_reduction()
+                await self.pick_minimal_power_reduction()
             else:
-                self.check_if_we_can_turn_on_devices()
+                await self.check_if_we_can_turn_on_devices()
+        else:
+            _LOGGER.debug("No valid tariff")
