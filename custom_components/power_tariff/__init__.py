@@ -1,5 +1,5 @@
 """Support for power tariff."""
-import asyncio
+import itertools
 import logging
 import time
 from operator import attrgetter
@@ -7,11 +7,9 @@ from operator import attrgetter
 import homeassistant.helpers.config_validation as cv
 import homeassistant.util.dt as dt_util
 import voluptuous as vol
-from homeassistant.const import (EVENT_HOMEASSISTANT_START, SERVICE_TURN_OFF,
-                                 SERVICE_TURN_ON)
+from homeassistant.const import SERVICE_TURN_OFF
 from homeassistant.helpers import discovery
-from homeassistant.helpers.event import (async_track_state_change,
-                                         track_state_change)
+from homeassistant.helpers.event import async_track_state_change
 from homeassistant.helpers.typing import ConfigType, HomeAssistantType
 
 from .const import DOMAIN
@@ -57,16 +55,9 @@ async def async_setup(hass: HomeAssistantType, config: ConfigType) -> bool:
         # We don't really care about the cb, it just kick off everthing.
         await pc.update()
 
-    async def ha_ready_cb(event):
-        _LOGGER.info("READY")
-        #await asyncio.sleep(30)
-    #    pc.ready = True
-        # get_entity_object(hass, "switch.stor_kule")
-
     pc.add_tariff(tariffs)
     hass.data[DOMAIN] = pc
 
-    hass.bus.async_listen(EVENT_HOMEASSISTANT_START, ha_ready_cb)
     async_track_state_change(hass, entity_ids=config.get("monitor_entity"), action=cb)
 
     hass.async_create_task(
@@ -74,7 +65,7 @@ async def async_setup(hass: HomeAssistantType, config: ConfigType) -> bool:
             hass, "switch", DOMAIN, config.get("devices"), config
         )
     )
-    _LOGGER.debug("at end")
+
     return True
 
 
@@ -152,7 +143,7 @@ class PowerController:
         self.ready = False
 
         # Remove me later
-        import itertools
+
         t = [2000] * 6 + [3000] * 6 + [2500] * 6 + [1000] * 6
         self.t = itertools.cycle(t)
         # remove me later.
@@ -184,7 +175,7 @@ class PowerController:
             raise NoValidTariff
 
     @property
-    def current_power_usage(self):
+    def current_power_usage_org(self):
         """There must be a better way to get it."""
         state = self.hass.states.get(self.settings.get("monitor_entity"))
         try:
@@ -194,7 +185,7 @@ class PowerController:
             return 0
 
     @property
-    def current_power_usage_fake(self):
+    def current_power_usage(self): # FAKE
         """Just faked, just tired of turning on and off the stove.."""
         return int(next(self.t))
 
@@ -204,8 +195,8 @@ class PowerController:
         power_reduced_kwh = 0
         devs = []
 
-        #current_power_usage = self.current_power_usage
-        current_power_usage = self.current_power_usage_fake
+        # current_power_usage = self.current_power_usage
+        current_power_usage = self.current_power_usage
 
         for device in sorted(self.devices, key=attrgetter("priority")):
             if device.is_on is False:
@@ -226,8 +217,8 @@ class PowerController:
                 await dev.proxy_turn_off()
 
     async def should_reduce_power(self):
-        if self.current_power_usage_fake > self.current_tariff.tariff_limit:
-        #if self.current_power_usage > self.current_tariff.tariff_limit:
+        if self.current_power_usage > self.current_tariff.tariff_limit:
+            # if self.current_power_usage > self.current_tariff.tariff_limit:
             if self.first_over_limit is None:
                 self.first_over_limit = time.time()
 
@@ -265,7 +256,6 @@ class PowerController:
                 if (
                     # Dunno how helpfull it is to check the device current usage as
                     # if its turned off it should be very low.
-
                     self.current_power_usage + device.get_power_usage()
                     < self.current_tariff.tariff_limit
                 ):
@@ -287,7 +277,7 @@ class PowerController:
     async def update(self, power_usage=None):
         """Main method that really handles most of the work."""
         _LOGGER.info("Running update")
-        #if self.ready is False:
+        # if self.ready is False:
         #    return
 
         self.check_tariff()

@@ -12,6 +12,6 @@ def get_entity_object(hass, entity_id):
                 _LOGGER.debug("Found it, %r", ent)
                 return ent
     except Exception as e:
-        _LOGGER.exception("Fail to get the entity using %s", entity_id)
+        _LOGGER.exception("Failed to get the entity using %s", entity_id)
 
     return None

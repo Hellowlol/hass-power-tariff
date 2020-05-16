@@ -1,7 +1,7 @@
 {
   "domain": "power_tariff",
   "name": "power_tariff",
-  "documentation": "https://github.com/Hellowlol/sensor.avfallsor",
+  "documentation": "https://github.com/Hellowlol/hass-power-tariff",
   "dependencies": [],
   "codeowners": ["@hellowlol"],
   "requirements": []

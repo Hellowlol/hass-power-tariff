@@ -60,7 +60,11 @@ class PowerDevice(SwitchDevice):
                 state = self.hass.states.get(self.turn_on)
 
                 if state and state.attributes.get(attr) is not None:
-                    _LOGGER.debug("Using attribute %s on %s to get the power usage", attr, self.turn_on)
+                    _LOGGER.debug(
+                        "Using attribute %s on %s to get the power usage",
+                        attr,
+                        self.turn_on,
+                    )
                     return float(state.attributes.get(attr))
 
             return float(self.assumed_usage)
@@ -69,9 +73,11 @@ class PowerDevice(SwitchDevice):
             try:
                 return float(self.hass.states.get(self.power_usage))
             except (AttributeError, TypeError):
-                _LOGGER.debug("Failed to get the power usage from %s, using assumed usage", self.power_usage)
+                _LOGGER.debug(
+                    "Failed to get the power usage from %s, using assumed usage",
+                    self.power_usage,
+                )
                 return float(self.assumed_usage)
-
 
     async def _turn(self, mode=False):
         """Helper to turn off on on a device"""
@@ -82,14 +88,13 @@ class PowerDevice(SwitchDevice):
         # Maybe we needed a grace periode for some kind, so we dont turn off the hotplate
         # during dinner. :D
 
-        d = {"on": True,
-             "off": False,
-             "turn_off": False,
-             "turn_on": True}
+        d = {"on": True, "off": False, "turn_off": False, "turn_on": True}
 
         act = self.is_proxy_device_on()
         if self.action is not None and d[self.action] is not act:
-            _LOGGER.info("Proxy device has changed status without power controller doing it (fx manually pressed the button, a automation or something), not doing anything.")
+            _LOGGER.info(
+                "Proxy device has changed status without power controller doing it (fx manually pressed the button, a automation or something), not doing anything."
+            )
             return
 
         if mode is True:
@@ -132,7 +137,9 @@ class PowerDevice(SwitchDevice):
         state = self.hass.states.get(proxy.entity_id)
         if state is not None:
             if state.state in (STATE_PROBLEM, STATE_UNAVAILABLE):
-                _LOGGER.info("%s has state %s defaulting to False", proxy.entity_id, state.state)
+                _LOGGER.info(
+                    "%s has state %s defaulting to False", proxy.entity_id, state.state
+                )
                 return False
 
         if hasattr(proxy, "is_on"):
@@ -163,14 +170,16 @@ class PowerDevice(SwitchDevice):
     @property
     def device_state_attributes(self):
         """Return the state attributes."""
-        return {"priority": self.priority,
-                "represent": self.turn_on_entity,
-                "power_usage": self.get_power_usage(),
-                "is_on": self.is_on}
+        return {
+            "priority": self.priority,
+            "represent": self.turn_on_entity,
+            "power_usage": self.get_power_usage(),
+            "is_on": self.is_on,
+        }
 
     @property
     def name(self):
-        return f"{DOMAIN}_{self.turn_on_entity}".replace('.', '_')
+        return f"{DOMAIN}_{self.turn_on_entity}".replace(".", "_")
 
     @property
     def is_on(self):
